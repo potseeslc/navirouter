@@ -1,0 +1,46 @@
+{
+  "name": "navirouter",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "description": "A smart Subsonic/OpenSubsonic router for Navidrome, powered by AudioMuse.",
+  "homepage": "https://github.com/potseeslc/navirouter",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/potseeslc/navirouter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/potseeslc/navirouter/issues"
+  },
+  "keywords": [
+    "navidrome",
+    "subsonic",
+    "opensubsonic",
+    "audiomuse",
+    "music-discovery",
+    "self-hosted"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "NODE_ENV=test node --test test/*.test.mjs",
+    "smoke": "node scripts/smoke-test.mjs",
+    "client:logger": "node scripts/client-method-logger.mjs",
+    "client:summary": "node scripts/client-test-summary.mjs",
+    "client:apply": "node scripts/apply-client-test-report.mjs"
+  },
+  "license": "0BSD",
+  "files": [
+    "server.mjs",
+    "public",
+    "scripts",
+    "deploy",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CONTRIBUTING.md"
+  ]
+}

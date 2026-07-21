@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NaviRouter Dashboard</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+        background: #f7f3eb;
+        color: #181818;
+        --surface: #fffdf8;
+        --surface-2: #eee9dd;
+        --line: rgba(24, 24, 24, 0.12);
+        --muted: rgba(24, 24, 24, 0.62);
+        --good: #1b7a4a;
+        --warn: #9b5a18;
+        --bad: #ad352f;
+        --accent: #20586a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          linear-gradient(180deg, rgba(32, 88, 106, 0.08), transparent 360px),
+          #f7f3eb;
+      }
+
+      main {
+        width: min(1180px, calc(100vw - 28px));
+        margin: 0 auto;
+        padding: 28px 0 40px;
+      }
+
+      header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 8px 0 22px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 34px;
+        line-height: 1.05;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 16px;
+        line-height: 1.25;
+        letter-spacing: 0;
+      }
+
+      h3 {
+        font-size: 13px;
+        color: var(--muted);
+        font-weight: 650;
+      }
+
+      .subtitle {
+        color: var(--muted);
+        margin-top: 6px;
+        max-width: 70ch;
+        line-height: 1.45;
+      }
+
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      button {
+        appearance: none;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        color: currentColor;
+        border-radius: 8px;
+        min-height: 38px;
+        padding: 0 13px;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
+      }
+
+      select {
+        appearance: none;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        color: currentColor;
+        border-radius: 8px;
+        min-height: 38px;
+        padding: 0 34px 0 12px;
+        font: inherit;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 28px;
+        padding: 0 10px;
+        border-radius: 999px;
+        font-size: 13px;
+        font-weight: 650;
+        background: var(--surface-2);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .ok {
+        color: var(--good);
+      }
+
+      .warn {
+        color: var(--warn);
+      }
+
+      .bad {
+        color: var(--bad);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 14px;
+        margin-top: 18px;
+      }
+
+      section {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        min-width: 0;
+      }
+
+      section {
+        padding: 16px;
+      }
+
+      .span-3 { grid-column: span 3; }
+      .span-4 { grid-column: span 4; }
+      .span-5 { grid-column: span 5; }
+      .span-7 { grid-column: span 7; }
+      .span-8 { grid-column: span 8; }
+      .span-12 { grid-column: span 12; }
+
+      .metric {
+        display: grid;
+        gap: 9px;
+      }
+
+      .metric-value {
+        font-size: 25px;
+        line-height: 1.1;
+        font-weight: 760;
+        overflow-wrap: anywhere;
+      }
+
+      .metric-note {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.35;
+      }
+
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .item:first-child {
+        border-top: 0;
+      }
+
+      .title {
+        font-weight: 680;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.4;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #discovery-list .item {
+        align-items: flex-start;
+      }
+
+      #discovery-list .meta {
+        white-space: normal;
+      }
+
+      code {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 12px;
+        color: color-mix(in srgb, currentColor 82%, var(--accent));
+        overflow-wrap: anywhere;
+      }
+
+      .kv {
+        display: grid;
+        grid-template-columns: 150px minmax(0, 1fr);
+        gap: 9px 14px;
+        font-size: 14px;
+      }
+
+      .kv dt {
+        color: var(--muted);
+      }
+
+      .kv dd {
+        margin: 0;
+        min-width: 0;
+      }
+
+      .empty {
+        color: var(--muted);
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+      }
+
+      .warning-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .warning {
+        border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+        background: color-mix(in srgb, var(--warn) 9%, var(--surface));
+        color: color-mix(in srgb, var(--warn) 70%, currentColor);
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 14px;
+        line-height: 1.35;
+      }
+
+      .test-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+        gap: 14px;
+      }
+
+      .command {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface-2);
+      }
+
+      .command code {
+        display: block;
+      }
+
+      .field {
+        display: grid;
+        gap: 7px;
+        margin-top: 10px;
+      }
+
+      .field label {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .subhead {
+        margin-top: 14px;
+      }
+
+      .check-list {
+        display: grid;
+        gap: 8px;
+        margin: 10px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .check-list li {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.35;
+      }
+
+      .check-list li::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        margin-top: 5px;
+        background: var(--accent);
+      }
+
+      @media (max-width: 860px) {
+        header {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .toolbar {
+          justify-content: flex-start;
+        }
+
+        .span-3,
+        .span-4,
+        .span-5,
+        .span-7,
+        .span-8 {
+          grid-column: span 12;
+        }
+
+        .test-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .kv {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          background: #111315;
+          color: #f4efe6;
+          --surface: #191d1f;
+          --surface-2: #23282b;
+          --line: rgba(244, 239, 230, 0.13);
+          --muted: rgba(244, 239, 230, 0.62);
+          --good: #6bd59a;
+          --warn: #e0aa62;
+          --bad: #ff8178;
+          --accent: #78b9cc;
+        }
+
+        body {
+          background:
+            linear-gradient(180deg, rgba(120, 185, 204, 0.08), transparent 360px),
+            #111315;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>NaviRouter</h1>
+          <p class="subtitle">A control room for AudioMuse-powered discovery through Navidrome clients. No playback controls, no metadata tricks, just proof of what the router is doing.</p>
+        </div>
+        <div class="toolbar">
+          <span class="pill" id="overall-pill"><span class="dot"></span><span>checking</span></span>
+          <button id="refresh" type="button" title="Refresh status">Refresh</button>
+        </div>
+      </header>
+
+      <div class="grid">
+        <section class="metric span-3">
+          <h3>Navidrome</h3>
+          <div class="metric-value" id="navidrome-status">checking</div>
+          <div class="metric-note" id="navidrome-note">upstream health</div>
+        </section>
+        <section class="metric span-3">
+          <h3>AudioMuse</h3>
+          <div class="metric-value" id="audiomuse-status">checking</div>
+          <div class="metric-note" id="audiomuse-note">similarity service</div>
+        </section>
+        <section class="metric span-3">
+          <h3>Last Radio</h3>
+          <div class="metric-value" id="radio-count">0 songs</div>
+          <div class="metric-note" id="radio-note">waiting for radio</div>
+        </section>
+        <section class="metric span-3">
+          <h3>Traffic</h3>
+          <div class="metric-value" id="request-count">0</div>
+          <div class="metric-note">proxied Subsonic requests</div>
+        </section>
+
+        <section class="span-7">
+          <div class="section-head">
+            <h2>AudioMuse Attribution</h2>
+            <span class="pill ok" id="source-pill"><span class="dot"></span><span>waiting</span></span>
+          </div>
+          <dl class="kv">
+            <dt>Source</dt><dd id="radio-source">No radio response yet</dd>
+            <dt>Seed</dt><dd><code id="radio-seed">none</code></dd>
+            <dt>Library scope</dt><dd id="radio-library">global or client omitted scope</dd>
+            <dt>AudioMuse status</dt><dd id="similarity-message">waiting</dd>
+          </dl>
+        </section>
+
+        <section class="span-5">
+          <div class="section-head">
+            <h2>Warnings</h2>
+          </div>
+          <div class="warning-list" id="warnings"></div>
+        </section>
+
+        <section class="span-7">
+          <div class="section-head">
+            <h2>Queue Match</h2>
+            <span class="pill" id="match-pill"><span class="dot"></span><span>no playback</span></span>
+          </div>
+          <div class="list" id="playback-list"></div>
+        </section>
+
+        <section class="span-5">
+          <div class="section-head">
+            <h2>Returned Radio Songs</h2>
+            <span class="pill" id="returned-pill">0 shown</span>
+          </div>
+          <div class="list" id="radio-list"></div>
+        </section>
+
+        <section class="span-7">
+          <div class="section-head">
+            <h2>Recent Client Methods</h2>
+          </div>
+          <div class="list" id="recent-list"></div>
+        </section>
+
+        <section class="span-5">
+          <div class="section-head">
+            <h2>Configuration</h2>
+          </div>
+          <dl class="kv" id="config-list"></dl>
+        </section>
+
+        <section class="span-12">
+          <div class="section-head">
+            <h2>Client Test Runbook</h2>
+            <span class="pill" id="test-pill">4 remaining</span>
+          </div>
+          <div class="test-grid">
+            <div>
+              <h3>Use This Server URL</h3>
+              <p class="metric-note">Add NaviRouter as a Subsonic/OpenSubsonic server in the client under test. Use your real Navidrome username and password only in the client app.</p>
+              <div class="command">
+                <code id="client-url">loading</code>
+                <button type="button" data-copy-target="client-url">Copy</button>
+              </div>
+              <div class="field">
+                <label for="client-select">Client under test</label>
+                <select id="client-select">
+                  <option>Amperfy</option>
+                  <option>Symfonium</option>
+                  <option>Play:Sub</option>
+                  <option>Narjo</option>
+                </select>
+              </div>
+              <h3 class="subhead">Export Evidence</h3>
+              <p class="metric-note">Save the selected client's markdown report before running the apply command.</p>
+              <div class="command">
+                <code id="client-report-url">loading</code>
+                <button type="button" data-copy-target="client-report-url">Copy</button>
+              </div>
+              <h3 class="subhead">Start Fresh</h3>
+              <p class="metric-note">Run this before a client test to clear only NaviRouter diagnostics, not music data or playlists.</p>
+              <div class="command">
+                <code id="client-reset-command">loading</code>
+                <button type="button" data-copy-target="client-reset-command">Copy</button>
+              </div>
+              <h3 class="subhead">Apply After Review</h3>
+              <p class="metric-note">The dry run must say OK before using the write command.</p>
+              <div class="command">
+                <code id="client-apply-command">loading</code>
+                <button type="button" data-copy-target="client-apply-command">Copy</button>
+              </div>
+              <div class="command">
+                <code id="client-apply-write-command">loading</code>
+                <button type="button" data-copy-target="client-apply-write-command">Copy</button>
+              </div>
+              <ul class="check-list" id="test-checks"></ul>
+            </div>
+            <div>
+              <h3>Remaining Clients</h3>
+              <div class="list" id="client-test-list"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="span-12">
+          <div class="section-head">
+            <h2>Discovery Tools</h2>
+            <span class="pill" id="discovery-pill">ready</span>
+          </div>
+          <div class="list" id="discovery-list"></div>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      function setPill(id, state, text) {
+        const node = $(id);
+        node.classList.remove('ok', 'warn', 'bad');
+        if (state) node.classList.add(state);
+        const label = node.querySelector('span:last-child') || node;
+        label.textContent = text;
+      }
+
+      function serviceLabel(service) {
+        if (!service) return { state: 'warn', text: 'unknown', note: 'no status returned' };
+        if (service.ok) return { state: 'ok', text: 'ok', note: `${service.latencyMs || 0} ms` };
+        return { state: 'bad', text: 'down', note: service.error || `HTTP ${service.status || 'unknown'}` };
+      }
+
+      function setService(prefix, service) {
+        const label = serviceLabel(service);
+        const status = $(`${prefix}-status`);
+        status.textContent = label.text;
+        status.className = `metric-value ${label.state}`;
+        $(`${prefix}-note`).textContent = label.note;
+      }
+
+      function itemHtml(primary, secondary, badge = '') {
+        return `<div class="item"><div><div class="title">${escapeHtml(primary)}</div><div class="meta">${escapeHtml(secondary)}</div></div>${badge}</div>`;
+      }
+
+      function emptyHtml(text) {
+        return `<div class="empty">${escapeHtml(text)}</div>`;
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+
+      function renderWarnings(status, config) {
+        const warnings = [];
+        const similarity = status.router?.audioMuseSimilarity;
+        const radio = status.router?.lastRadioQueue;
+        const radioFailure = status.router?.lastRadioFailure;
+        if (!status.services?.navidrome?.ok) warnings.push('Navidrome is unreachable; clients may fail normal browsing or streaming.');
+        if (!status.services?.audiomuse?.ok) warnings.push('AudioMuse is unreachable; radio falls back to Navidrome.');
+        if (similarity && similarity.ok === false) warnings.push(similarity.message || 'Last AudioMuse lookup failed.');
+        if (radioFailure?.ok === false) {
+          const seed = radioFailure.seed || {};
+          const seedLabel = [seed.title, seed.artist].filter(Boolean).join(' by ') || radioFailure.seedId || 'unknown seed';
+          warnings.push(`Last radio fallback: ${seedLabel} failed in AudioMuse (${radioFailure.message || 'unknown error'}).`);
+        }
+        if (radio?.ok && radio.scopeSource === 'global') warnings.push('Last radio request was global; the client did not send musicFolderId and NaviRouter could not infer a seed library.');
+        if (config?.mode === 'lan-vpn') warnings.push('LAN/VPN mode only. Do not expose this service directly to the public internet.');
+        $('warnings').innerHTML = warnings.length ? warnings.map((warning) => `<div class="warning">${escapeHtml(warning)}</div>`).join('') : emptyHtml('No current warnings beyond normal LAN/VPN posture.');
+      }
+
+      function renderRadio(status) {
+        const similarity = status.router?.audioMuseSimilarity || {};
+        const radio = status.router?.lastRadioQueue || {};
+        const radioFailure = status.router?.lastRadioFailure || {};
+        const songs = radio.songs || [];
+        $('radio-count').textContent = `${radio.returnedCount || 0} songs`;
+        $('radio-note').textContent = radio.at ? `updated ${new Date(radio.at).toLocaleTimeString()}` : radioFailure.at ? `fallback ${new Date(radioFailure.at).toLocaleTimeString()}` : 'waiting for radio';
+        $('radio-source').textContent = radio.ok ? 'AudioMuse via NaviRouter' : radioFailure.ok === false ? 'Fell back after AudioMuse miss' : 'No radio response yet';
+        $('radio-seed').textContent = radio.seedId || radioFailure.seedId || 'none';
+        const scopeLabels = {
+          client: `library ${radio.requestedLibraryId} from client`,
+          seed: `library ${radio.requestedLibraryId} inferred from seed`,
+          artist: 'artist seed adapted through AudioMuse tracks',
+          global: 'global; no library scope available'
+        };
+        const failureScopeLabels = {
+          client: `library ${radioFailure.requestedLibraryId} from client`,
+          seed: `library ${radioFailure.requestedLibraryId} inferred from seed`,
+          artist: 'artist seed adapted through AudioMuse tracks',
+          global: 'global; no library scope available'
+        };
+        $('radio-library').textContent = scopeLabels[radio.scopeSource] || failureScopeLabels[radioFailure.scopeSource] || 'waiting for scope';
+        $('similarity-message').textContent = similarity.message || 'waiting';
+        setPill('source-pill', radio.ok ? 'ok' : 'warn', radio.ok ? 'AudioMuse' : radioFailure.ok === false ? 'fallback' : 'waiting');
+        $('returned-pill').textContent = `${Math.min(songs.length, 8)} shown`;
+        $('radio-list').innerHTML = songs.length
+          ? songs.slice(0, 8).map((song) => itemHtml(song.title || song.id, `${song.artist || 'Unknown artist'} · ${song.album || 'Unknown album'}`)).join('')
+          : radioFailure.ok === false
+            ? itemHtml(radioFailure.seed?.title || radioFailure.seedId || 'Failed seed', `${radioFailure.seed?.artist || 'Unknown artist'} · ${radioFailure.message || 'AudioMuse missed and NaviRouter fell back.'}`, '<span class="pill warn">fallback</span>')
+            : emptyHtml('Trigger radio in a client to populate this list.');
+      }
+
+      function renderPlayback(status) {
+        const recent = status.router?.playbackTraffic?.recent || [];
+        const relevant = recent.filter((item) => ['stream', 'getsong', 'scrobble'].includes(item.method)).slice(0, 10);
+        const radioSongs = new Map((status.router?.lastRadioQueue?.songs || []).map((song) => [song.id, song]));
+        const matches = relevant.filter((item) => item.inLastRadioQueue).length;
+        const state = relevant.length === 0 ? 'warn' : matches === relevant.length ? 'ok' : 'warn';
+        setPill('match-pill', state, relevant.length ? `${matches}/${relevant.length} matched` : 'no playback');
+        $('playback-list').innerHTML = relevant.length
+          ? relevant.map((item) => {
+              const song = radioSongs.get(item.id);
+              const badge = `<span class="pill ${item.inLastRadioQueue ? 'ok' : 'warn'}">${item.inLastRadioQueue ? 'in queue' : 'outside'}</span>`;
+              const primary = song?.title || item.id;
+              const secondary = song ? `${song.artist || 'Unknown artist'} · ${item.method} · ${new Date(item.at).toLocaleTimeString()}` : `${item.method} · ${new Date(item.at).toLocaleTimeString()}`;
+              return itemHtml(primary, secondary, badge);
+            }).join('')
+          : emptyHtml('Playback requests will appear after the client streams or resolves queue tracks.');
+      }
+
+      function renderRecent(status) {
+        const recent = status.router?.subsonicTraffic?.recent || [];
+        $('recent-list').innerHTML = recent.length
+          ? recent.slice(0, 10).map((item) => {
+              const scope = item.requestedLibraryId ? `library ${item.requestedLibraryId}` : 'unscoped';
+              const badge = `<span class="pill ${item.intercepted ? 'ok' : ''}">${item.intercepted ? 'intercepted' : 'proxied'}</span>`;
+              return itemHtml(item.method, `${item.client || 'unknown client'} · ${scope} · ${new Date(item.at).toLocaleTimeString()}`, badge);
+            }).join('')
+          : emptyHtml('No client traffic yet.');
+      }
+
+      function renderConfig(config) {
+        const routes = config?.routes || {};
+        const upstreams = config?.upstreams || {};
+        const values = [
+          ['Mode', config?.mode || 'unknown'],
+          ['Subsonic route', routes.subsonic || '/rest'],
+          ['Save playlist API', routes.saveLastRadioPlaylist || '/api/router/last-radio/save-playlist'],
+          ['Generate playlist API', routes.saveGeneratedRadioPlaylist || '/api/router/radio-playlist'],
+          ['Sync playlist API', routes.syncAudioMusePlaylist || '/api/router/sync-playlist'],
+          ['Navidrome', upstreams.navidrome || 'unknown'],
+          ['AudioMuse', upstreams.audiomuse || 'unknown'],
+          ['Intercepts', (config?.intercepts || []).join(', ') || 'none']
+        ];
+        $('config-list').innerHTML = values.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd><code>${escapeHtml(value)}</code></dd>`).join('');
+      }
+
+      function renderDiscovery(status, config) {
+        const routes = config?.routes || {};
+        const radio = status.router?.lastRadioQueue || {};
+        const generatedRoute = routes.saveGeneratedRadioPlaylist || '/api/router/radio-playlist';
+        const lastRadioRoute = routes.saveLastRadioPlaylist || '/api/router/last-radio/save-playlist';
+        const syncRoute = routes.syncAudioMusePlaylist || '/api/router/sync-playlist';
+        const rows = [
+          ['Client radio bridge', '/rest/getSimilarSongs2.view', 'AudioMuse-backed queue for clients that call radio/similar endpoints.'],
+          ['Last queue playlist', lastRadioRoute, radio.ok ? `${radio.returnedCount || 0} AudioMuse songs ready` : 'Waiting for a client radio queue.'],
+          ['Seed playlist API', generatedRoute, 'Create, replace, or append a Navidrome playlist from one seed song.'],
+          ['AudioMuse sync API', syncRoute, 'Write an AudioMuse-selected result set into a normal Navidrome playlist.']
+        ];
+        $('discovery-list').innerHTML = rows.map(([title, route, detail]) => itemHtml(title, `${route} · ${detail}`)).join('');
+        $('discovery-pill').textContent = radio.ok ? 'queue ready' : 'no queue';
+        $('discovery-pill').className = `pill ${radio.ok ? 'ok' : 'warn'}`;
+      }
+
+      function clientReportFilename(clientName) {
+        return `/tmp/${clientName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-report.md`;
+      }
+
+      function renderClientTesting(status, config) {
+        const selectedClient = $('client-select')?.value || 'Amperfy';
+        const route = status.guidance?.clientUrl || '/rest';
+        const clientUrl = new URL(route, window.location.origin).toString();
+        const reportRoute = config?.routes?.clientTestReport || '/api/router/client-test-report';
+        const reportUrl = new URL(reportRoute, window.location.origin);
+        reportUrl.searchParams.set('client', selectedClient);
+        reportUrl.searchParams.set('format', 'markdown');
+        const resetRoute = config?.routes?.clientTestReset || '/api/router/client-test-reset';
+        const resetUrl = new URL(resetRoute, window.location.origin);
+        const reportFile = clientReportFilename(selectedClient);
+        $('client-url').textContent = clientUrl;
+        $('client-report-url').textContent = `curl -fsS "${reportUrl.toString()}" > ${reportFile}`;
+        $('client-reset-command').textContent = `curl -fsS -X POST ${resetUrl.toString()}`;
+        $('client-apply-command').textContent = `npm run client:apply -- --client ${selectedClient} --report ${reportFile}`;
+        $('client-apply-write-command').textContent = `npm run client:apply -- --client ${selectedClient} --report ${reportFile} --write`;
+        const checks = [
+          'Start fresh by resetting diagnostic buffers before each app-specific test.',
+          'Browse albums, artists, genres, playlists, and folders.',
+          'Switch Navidrome libraries/music folders if the client exposes that control.',
+          'Trigger radio, similar songs, mix, station, or Auto DJ.',
+          `Save the markdown report to ${reportFile}.`,
+          'Refresh this dashboard and confirm recent methods, library scope, and AudioMuse queue proof.',
+          'Record the observed calls in docs/client-test-results.md before checking off the roadmap.'
+        ];
+        $('test-checks').innerHTML = checks.map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+
+        const clients = [
+          ['Amperfy', 'Needs browse, library switch, song preview, and getSimilarSongs2.'],
+          ['Symfonium', 'Needs browse, library switch, radio/similar behavior, and endpoint choice.'],
+          ['Play:Sub', 'Needs browse/playback and whether legacy getSimilarSongs is called.'],
+          ['Narjo', 'Needs baseline Subsonic compatibility and any discovery surfaces.']
+        ];
+        $('client-test-list').innerHTML = clients.map(([name, detail]) => itemHtml(name, detail, '<span class="pill warn">open</span>')).join('');
+        $('test-pill').textContent = `${clients.length} remaining`;
+      }
+
+      async function refresh() {
+        try {
+          const [statusResponse, configResponse] = await Promise.all([
+            fetch('/api/router/status', { cache: 'no-store' }),
+            fetch('/api/config', { cache: 'no-store' })
+          ]);
+          const status = await statusResponse.json();
+          const config = await configResponse.json();
+          setPill('overall-pill', status.ok ? 'ok' : 'bad', status.ok ? 'healthy' : 'attention');
+          setService('navidrome', status.services?.navidrome);
+          setService('audiomuse', status.services?.audiomuse);
+          $('request-count').textContent = String(status.router?.subsonicTraffic?.total || 0);
+          renderRadio(status);
+          renderPlayback(status);
+          renderRecent(status);
+          renderConfig(config);
+          renderDiscovery(status, config);
+          renderClientTesting(status, config);
+          renderWarnings(status, config);
+        } catch (error) {
+          setPill('overall-pill', 'bad', 'offline');
+          $('warnings').innerHTML = `<div class="warning">${escapeHtml(error.message || 'Could not load status')}</div>`;
+        }
+      }
+
+      document.addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-copy-target]');
+        if (!button) return;
+        const target = $(button.dataset.copyTarget);
+        const value = target?.textContent || '';
+        if (!value) return;
+        try {
+          await navigator.clipboard.writeText(value);
+          const original = button.textContent;
+          button.textContent = 'Copied';
+          setTimeout(() => { button.textContent = original; }, 1200);
+        } catch {
+          button.textContent = 'Select';
+        }
+      });
+
+      $('refresh').addEventListener('click', refresh);
+      $('client-select').addEventListener('change', refresh);
+      refresh();
+      setInterval(refresh, 10000);
+    </script>
+  </body>
+</html>
