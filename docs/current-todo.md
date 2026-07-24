@@ -19,7 +19,7 @@ This is the cleaned-up todo list after comparing the original NaviRouter plan wi
 1. Run the public alpha client compatibility pass.
    - [x] Publish v0.1.2 to Gitea and the public GitHub history.
    - [x] Add an AI-forward alpha testing guide and structured report template.
-   - [ ] Publish the GitHub v0.1.2 pre-release notes.
+   - [x] Publish the GitHub v0.1.2 pre-release notes.
    - [ ] Invite the Navidrome community to test with the safe capture workflow.
    - [ ] Amperfy: runtime test browse, library switch, song preview, and `getSimilarSongs2`.
    - [ ] Symfonium: runtime test browse, library switch, radio/similar behavior, and endpoint choice.
