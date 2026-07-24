@@ -198,6 +198,29 @@ if (process.env.NODE_ENV !== 'test') {
   server.listen(port, '0.0.0.0', () => {
     console.log(`${appName} ${appVersion} listening on http://0.0.0.0:${port}`);
   });
+  installGracefulShutdown(server);
+}
+
+function installGracefulShutdown(httpServer, runtime = process) {
+  let shuttingDown = false;
+
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`${appName} received ${signal}; shutting down.`);
+    httpServer.close((error) => {
+      if (error) {
+        console.error(`${appName} shutdown failed: ${redactText(error.message)}`);
+        runtime.exitCode = 1;
+        return;
+      }
+      console.log(`${appName} shutdown complete.`);
+    });
+  };
+
+  runtime.once('SIGTERM', () => shutdown('SIGTERM'));
+  runtime.once('SIGINT', () => shutdown('SIGINT'));
+  return shutdown;
 }
 
 async function handleSubsonic(req, res, url, libraryId = null) {
@@ -2175,6 +2198,7 @@ export {
   clientTestReport,
   configuredWebhookEvents,
   discardWebhookResponse,
+  installGracefulShutdown,
   isAudioResponse,
   mergedParams,
   navidromeRequestHeaders,

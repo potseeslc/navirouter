@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request as httpRequest } from 'node:http';
 import { join } from 'node:path';
@@ -25,6 +25,7 @@ const {
   boundedCount,
   configuredWebhookEvents,
   discardWebhookResponse,
+  installGracefulShutdown,
   isAudioResponse,
   mergedParams,
   navidromeRequestHeaders,
@@ -50,6 +51,43 @@ const {
   versionInfo,
   xmlEscape
 } = await import(`../server.mjs?unit=${Date.now()}`);
+
+test('installGracefulShutdown closes once when a termination signal arrives', () => {
+  const runtime = new EventEmitter();
+  let closeCalls = 0;
+  const httpServer = {
+    close(callback) {
+      closeCalls += 1;
+      callback();
+    }
+  };
+
+  installGracefulShutdown(httpServer, runtime);
+  runtime.emit('SIGTERM');
+  runtime.emit('SIGINT');
+
+  assert.equal(closeCalls, 1);
+  assert.equal(runtime.exitCode, undefined);
+});
+
+test('installGracefulShutdown marks a failed close as an error', () => {
+  const runtime = new EventEmitter();
+  const originalConsoleError = console.error;
+  console.error = () => {};
+
+  try {
+    installGracefulShutdown({
+      close(callback) {
+        callback(new Error('close failed'));
+      }
+    }, runtime);
+    runtime.emit('SIGTERM');
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.equal(runtime.exitCode, 1);
+});
 
 test('serviceUrl rejects non-http upstreams', () => {
   assert.throws(() => serviceUrl('file:///etc/passwd', 'BAD_URL'), /http or https/);
