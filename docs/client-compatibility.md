@@ -1,5 +1,7 @@
 # Client Compatibility
 
+NaviRouter v0.1.2 is a public alpha. Community reports should follow the safe, AI-forward [Public Alpha Testing](public-alpha.md) workflow and use the GitHub client compatibility issue template.
+
 NaviRouter should work as a normal Subsonic/OpenSubsonic server URL for clients that already support Navidrome. The key MVP question is whether a client calls one of the similar-song endpoints that NaviRouter can enrich with AudioMuse.
 
 Use this server URL shape in clients:

@@ -21,9 +21,15 @@ Why:
 
 - `v0.1.0`: first MVP tag.
 - `v0.1.1`: router roadmap update with dashboard, library-scope inference, playlist save/update/generation APIs, attribution docs, deployment-security docs, and improved sonic path bridge ranking.
-- `v0.1.2`: generic signed webhooks for correlated AudioMuse radio generation, playback confirmation, and Navidrome fallback events.
+- `v0.1.2`: public alpha with generic signed webhooks, correlated AudioMuse radio/playback/fallback events, graceful container shutdown, and a community client-testing workflow.
 
 Use patch releases while the public API is still settling. Move to `v0.2.0` when another client beyond Arpeggi is verified, GitHub community feedback changes behavior, or a client profile becomes necessary.
+
+## Public Alpha Positioning
+
+Present `v0.1.2` as a GitHub pre-release and keep the existing tag stable. The alpha is intentionally AI-forward: human-directed AI coding agents assist with planning, implementation, tests, documentation, and review, while the human maintainer owns decisions and releases.
+
+Community outreach should link to [Public Alpha Testing](public-alpha.md), emphasize LAN/VPN-only deployment, and request structured runtime evidence for Amperfy, Symfonium, Play:Sub, Narjo, and other Subsonic/OpenSubsonic clients.
 
 ## Release Gate
 

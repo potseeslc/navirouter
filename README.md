@@ -1,5 +1,9 @@
 # NaviRouter
 
+> **Public Alpha — AI-forward and community-tested**
+>
+> NaviRouter v0.1.2 is ready for careful LAN/VPN testing, not unattended production or direct public-internet exposure. The project is intentionally built through human-directed collaboration with AI coding agents. Automated tests, live smoke checks, and human release decisions are in place; real client behavior still needs broader community verification.
+
 NaviRouter is a smart Subsonic/OpenSubsonic router for Navidrome clients. Point a client such as Arpeggi, Amperfy, Symfonium, or Feishin at NaviRouter instead of Navidrome, and NaviRouter forwards normal Subsonic traffic while answering similar-song requests with AudioMuse-powered sonic similarity.
 
 The goal is simple: keep using the music app you already like, but give its radio and similar-song buttons better ears.
@@ -14,6 +18,27 @@ Subsonic client -> NaviRouter -> Navidrome
 Navidrome has a great server and a healthy client ecosystem, but sonic discovery is still uneven across clients and often depends on server-side Last.fm-style similarity. AudioMuse can analyze a library and produce richer audio embeddings, but most Subsonic clients do not know how to use that data.
 
 NaviRouter bridges that gap without asking every client to implement a custom AudioMuse integration.
+
+## An AI-Forward Alpha
+
+NaviRouter is intentionally transparent about how it is made. Its roadmap, implementation, tests, documentation, review workflow, and release checks are developed through collaboration between a human maintainer and AI coding agents. The human maintainer owns product decisions and releases; AI output is reviewed and verified with tests and live checks before publication.
+
+That workflow is part of this alpha experiment, not marketing decoration. Community testers can help evaluate both the software and the AI-forward development process:
+
+- Does NaviRouter work with real Subsonic/OpenSubsonic clients outside the maintainer's homelab?
+- Are setup instructions clear enough for a new operator?
+- Do diagnostics capture useful evidence without leaking credentials?
+- Are AI-authored changes understandable, testable, and easy for humans to review?
+
+AI-assisted contributions are welcome, but they must disclose that assistance, explain the verification performed, and remain accountable to human review. See [Public Alpha Testing](docs/public-alpha.md) and [Contributing](CONTRIBUTING.md).
+
+## Public Alpha: Test a Client
+
+Arpeggi is confirmed. The current priority is runtime evidence for **Amperfy, Symfonium, Play:Sub, Narjo**, and other Subsonic/OpenSubsonic clients.
+
+Start with the fake [Client Method Logger](docs/client-method-logger.md) when possible. It uses fake credentials and records redacted endpoint calls without connecting the client to a real music library. Then open a [client compatibility report](https://github.com/potseeslc/navirouter/issues/new?template=client_compatibility.md) with the client version, platform, tested actions, observed methods, and sanitized results.
+
+Never post usernames, passwords, Subsonic tokens or salts, AudioMuse tokens, cookies, private URLs, or full diagnostic dumps. Keep NaviRouter on a trusted LAN or VPN during this alpha.
 
 ## Current MVP
 
