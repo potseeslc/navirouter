@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
@@ -10,9 +11,21 @@ import { tmpdir } from 'node:os';
 process.env.NODE_ENV = 'test';
 process.env.AUDIOMUSE_API_TOKEN = 'test-audiomuse-token';
 
+async function waitFor(predicate, label, timeoutMs = 2000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`Timed out waiting for ${label}`);
+}
+
 const {
   server: unitServer,
   boundedCount,
+  configuredWebhookEvents,
+  discardWebhookResponse,
+  isAudioResponse,
   mergedParams,
   navidromeRequestHeaders,
   normalizeAudioMuseCandidates,
@@ -20,6 +33,9 @@ const {
   redactText,
   responseFormat,
   recordAudioMuseSimilaritySuccess,
+  radioQueueIsFresh,
+  readBoundedResponseBody,
+  sameRequestCorrelation,
   secretValue,
   serviceEndpoint,
   serviceUrl,
@@ -29,6 +45,7 @@ const {
   songCacheStatus,
   songAttributes,
   subsonicMethod,
+  subsonicResponseSucceeded,
   subsonicXml,
   versionInfo,
   xmlEscape
@@ -46,7 +63,7 @@ test('serviceEndpoint preserves path prefixes', () => {
 test('versionInfo exposes app and protocol versions', () => {
   assert.deepEqual(Object.keys(versionInfo()).sort(), ['name', 'node', 'subsonicApiVersion', 'version'].sort());
   assert.equal(versionInfo().name, 'NaviRouter');
-  assert.equal(versionInfo().version, '0.1.1');
+  assert.equal(versionInfo().version, '0.1.2');
 });
 
 test('subsonicMethod normalizes .view suffixes', () => {
@@ -84,6 +101,85 @@ test('boundedCount clamps count values', () => {
   assert.equal(boundedCount('0', 50, 1, 100), 1);
   assert.equal(boundedCount('250', 50, 1, 100), 100);
   assert.equal(boundedCount('42', 50, 1, 100), 42);
+});
+
+test('configuredWebhookEvents defaults to radio notification events', () => {
+  assert.deepEqual([...configuredWebhookEvents('')], ['radio.generated', 'radio.playback_confirmed', 'radio.fallback']);
+  assert.deepEqual([...configuredWebhookEvents('radio.generated, radio.fallback')], ['radio.generated', 'radio.fallback']);
+});
+
+test('discardWebhookResponse cancels ignored webhook response bodies', async () => {
+  let cancelled = false;
+  await discardWebhookResponse({
+    body: {
+      async cancel() {
+        cancelled = true;
+      }
+    }
+  });
+  assert.equal(cancelled, true);
+});
+
+test('isAudioResponse accepts media streams and rejects Subsonic error payloads', () => {
+  assert.equal(isAudioResponse('audio/flac'), true);
+  assert.equal(isAudioResponse('application/octet-stream; charset=binary'), true);
+  assert.equal(isAudioResponse('application/json'), false);
+  assert.equal(isAudioResponse('text/xml; charset=utf-8'), false);
+});
+
+test('subsonicResponseSucceeded validates JSON and XML response envelopes', () => {
+  assert.equal(subsonicResponseSucceeded(
+    JSON.stringify({ 'subsonic-response': { status: 'ok' } }),
+    'application/json'
+  ), true);
+  assert.equal(subsonicResponseSucceeded(
+    JSON.stringify({ 'subsonic-response': { status: 'failed', error: { code: 40 } } }),
+    'application/json'
+  ), false);
+  assert.equal(subsonicResponseSucceeded(
+    '<?xml version="1.0"?><subsonic-response status="ok" version="1.16.1"></subsonic-response>',
+    'text/xml'
+  ), true);
+  assert.equal(subsonicResponseSucceeded(
+    '<?xml version="1.0"?><subsonic-response status="failed"><error code="40"/></subsonic-response>',
+    'text/xml'
+  ), false);
+});
+
+test('readBoundedResponseBody rejects oversized declared and streamed bodies', async () => {
+  const accepted = await readBoundedResponseBody(new Response('small'), 5);
+  assert.equal(accepted.toString('utf8'), 'small');
+  await assert.rejects(
+    readBoundedResponseBody(new Response('too large'), 4),
+    /exceeded 4 bytes/
+  );
+  const chunked = new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('123'));
+      controller.enqueue(new TextEncoder().encode('456'));
+      controller.close();
+    }
+  }));
+  await assert.rejects(readBoundedResponseBody(chunked, 5), /exceeded 5 bytes/);
+});
+
+test('request correlation requires every available client discriminator to match', () => {
+  const base = {
+    usernameFingerprint: 'user',
+    client: 'apogee',
+    userAgentFingerprint: 'agent'
+  };
+  assert.equal(sameRequestCorrelation(base, { ...base }), true);
+  assert.equal(sameRequestCorrelation(base, { ...base, client: '' }), false);
+  assert.equal(sameRequestCorrelation(base, { ...base, userAgentFingerprint: null }), false);
+  assert.equal(sameRequestCorrelation(base, { ...base, client: 'other' }), false);
+});
+
+test('radio queue correlation expires stale queues', () => {
+  const now = Date.parse('2026-07-23T12:00:00.000Z');
+  assert.equal(radioQueueIsFresh({ at: '2026-07-23T11:59:00.000Z' }, now, 60_000), true);
+  assert.equal(radioQueueIsFresh({ at: '2026-07-23T11:58:59.999Z' }, now, 60_000), false);
+  assert.equal(radioQueueIsFresh({ at: 'invalid' }, now, 60_000), false);
 });
 
 test('secretValue reads direct env before secret file fallback', () => {
@@ -213,12 +309,12 @@ test('router exposes version and config metadata', async () => {
     assert.equal(versionResponse.status, 200);
     const version = await versionResponse.json();
     assert.equal(version.name, 'NaviRouter');
-    assert.equal(version.version, '0.1.1');
+    assert.equal(version.version, '0.1.2');
 
     const configResponse = await fetch(`http://127.0.0.1:${server.address().port}/api/config`);
     assert.equal(configResponse.status, 200);
     const config = await configResponse.json();
-    assert.equal(config.version, '0.1.1');
+    assert.equal(config.version, '0.1.2');
     assert.equal(config.routes.version, '/api/version');
     assert.equal(config.routes.syncAudioMusePlaylist, '/api/router/sync-playlist');
   } finally {
@@ -235,7 +331,7 @@ test('health exposes redacted AudioMuse similarity diagnostics', async () => {
     const response = await fetch(`http://127.0.0.1:${unitServer.address().port}/api/health`);
     assert.equal(response.status, 200);
     const body = await response.json();
-    assert.equal(body.app.version, '0.1.1');
+    assert.equal(body.app.version, '0.1.2');
     assert.equal(body.router.audioMuseSimilarity.ok, true);
     assert.equal(body.router.audioMuseSimilarity.status, 200);
     assert.match(body.router.audioMuseSimilarity.message, /3 candidate/);
@@ -295,7 +391,7 @@ test('client test reset clears live diagnostic evidence only through POST', asyn
     assert.equal(reset.status, 200);
     const resetBody = await reset.json();
     assert.equal(resetBody.ok, true);
-    assert.deepEqual(resetBody.cleared, ['subsonicTraffic', 'playbackTraffic', 'lastRadioQueue', 'lastRadioFailure', 'audioMuseSimilarity']);
+    assert.deepEqual(resetBody.cleared, ['subsonicTraffic', 'playbackTraffic', 'lastRadioQueue', 'lastRadioFailure', 'audioMuseSimilarity', 'webhookTraffic']);
 
     const report = module.clientTestReport('Symfonium');
     assert.equal(report.ok, false);
@@ -598,13 +694,183 @@ test('router intercepts getSimilarSongs2 and returns Navidrome song objects', as
     assert.deepEqual(createdPlaylist.songIds, ['candidate-2', 'candidate-1']);
     const syncStatusResponse = await fetch(`http://127.0.0.1:${server.address().port}/api/router/status`);
     const syncStatus = await syncStatusResponse.json();
-    assert.equal(syncStatus.router.lastRadioQueue.method, 'syncedplaylist');
+    assert.equal(syncStatus.router.lastRadioQueue.method, 'generatedplaylist');
+    assert.equal(syncStatus.router.lastRadioQueue.seedId, 'seed');
     assert.equal(syncStatus.router.lastRadioQueue.returnedCount, 2);
   } finally {
     server.close();
     navidrome.close();
     audiomuse.close();
     await Promise.all([once(server, 'close'), once(navidrome, 'close'), once(audiomuse, 'close')]);
+  }
+});
+
+test('router sends signed webhook events for AudioMuse radio generation and playback confirmation', async () => {
+  const webhookSecret = 'test-webhook-secret';
+  const webhookEvents = [];
+  let streamBodySent = false;
+  let streamRequestCount = 0;
+  const navidrome = createServer((req, res) => {
+    const url = new URL(req.url, 'http://navidrome.test');
+    if (url.pathname.endsWith('/getSong.view')) {
+      const id = url.searchParams.get('id');
+      const songs = {
+        seed: { id: 'seed', title: 'Seed Song', artist: 'Seed Artist', album: 'Seed Album', isDir: false },
+        'candidate-1': { id: 'candidate-1', title: 'Candidate One', artist: 'Candidate Artist', album: 'Candidate Album', isDir: false }
+      };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        'subsonic-response': {
+          status: 'ok',
+          song: songs[id] || { id, title: `Song ${id}`, artist: 'Artist', isDir: false }
+        }
+      }));
+      return;
+    }
+    if (url.pathname.endsWith('/stream.view')) {
+      streamRequestCount += 1;
+      res.writeHead(200, {
+        'content-type': 'audio/flac',
+        'content-length': '4'
+      });
+      res.flushHeaders();
+      setTimeout(() => {
+        streamBodySent = true;
+        res.end('data');
+      }, 100);
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ 'subsonic-response': { status: 'ok' } }));
+  });
+
+  const audiomuse = createServer((req, res) => {
+    const url = new URL(req.url, 'http://audiomuse.test');
+    if (url.pathname === '/api/health') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify([{ item_id: 'candidate-1' }]));
+  });
+
+  const webhook = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks).toString('utf8');
+    const expected = `sha256=${createHmac('sha256', webhookSecret).update(body).digest('hex')}`;
+    webhookEvents.push({
+      signature: req.headers['x-navirouter-signature'],
+      streamBodySent,
+      payload: JSON.parse(body)
+    });
+    assert.equal(req.method, 'POST');
+    assert.equal(req.headers['content-type'], 'application/json');
+    assert.equal(req.headers['x-navirouter-signature'], expected);
+    res.writeHead(204);
+    res.end();
+  });
+
+  await Promise.all([
+    new Promise((resolve) => navidrome.listen(0, resolve)),
+    new Promise((resolve) => audiomuse.listen(0, resolve)),
+    new Promise((resolve) => webhook.listen(0, resolve))
+  ]);
+
+  const navidromePort = navidrome.address().port;
+  const audiomusePort = audiomuse.address().port;
+  const webhookPort = webhook.address().port;
+  process.env.NAVIDROME_URL = `http://127.0.0.1:${navidromePort}`;
+  process.env.AUDIOMUSE_URL = `http://127.0.0.1:${audiomusePort}`;
+  process.env.NAVIROUTER_ALLOWED_NAVIDROME_HOSTS = `127.0.0.1:${navidromePort}`;
+  process.env.NAVIROUTER_ALLOWED_AUDIOMUSE_HOSTS = `127.0.0.1:${audiomusePort}`;
+  process.env.NAVIROUTER_WEBHOOK_URL = `http://127.0.0.1:${webhookPort}/events`;
+  process.env.NAVIROUTER_WEBHOOK_SECRET = webhookSecret;
+  process.env.NAVIROUTER_WEBHOOK_EVENTS = 'radio.generated,radio.playback_confirmed,radio.fallback';
+  process.env.NAVIROUTER_RECENT_PLAYBACK_LIMIT = '0';
+
+  const { server } = await import(`../server.mjs?webhook=${Date.now()}`);
+  await new Promise((resolve) => server.listen(0, resolve));
+
+  try {
+    const radioResponse = await fetch(`http://127.0.0.1:${server.address().port}/rest/getSimilarSongs2.view?id=seed&count=1&f=json&u=alice&t=tok&s=salt&c=client-a`);
+    assert.equal(radioResponse.status, 200);
+    await waitFor(() => webhookEvents.some((item) => item.payload.event === 'radio.generated'), 'radio.generated webhook');
+
+    const secondRadioResponse = await fetch(`http://127.0.0.1:${server.address().port}/rest/getSimilarSongs2.view?id=second-seed&count=1&f=json&u=alice&t=tok&s=salt&c=client-b`);
+    assert.equal(secondRadioResponse.status, 200);
+    await waitFor(
+      () => webhookEvents.filter((item) => item.payload.event === 'radio.generated').length === 2,
+      'second radio.generated webhook'
+    );
+
+    const streamResponse = await fetch(`http://127.0.0.1:${server.address().port}/rest/stream.view?id=candidate-1&f=json&u=alice&t=tok&s=salt&c=client-a`);
+    assert.equal(streamResponse.status, 200);
+    await streamResponse.arrayBuffer();
+    await waitFor(() => webhookEvents.some((item) => item.payload.event === 'radio.playback_confirmed'), 'radio.playback_confirmed webhook');
+
+    const generatedEvents = webhookEvents.filter((item) => item.payload.event === 'radio.generated');
+    const generated = generatedEvents[0].payload;
+    assert.equal(generated.radio.source, 'AudioMuse');
+    assert.equal(generated.radio.seedId, 'seed');
+    assert.equal(generated.radio.returnedCount, 1);
+    assert.equal(generated.songs[0].title, 'Candidate One');
+    assert.ok(generated.id);
+    assert.ok(generated.radio.id);
+
+    const confirmedDelivery = webhookEvents.find((item) => item.payload.event === 'radio.playback_confirmed');
+    const confirmed = confirmedDelivery.payload;
+    assert.equal(confirmedDelivery.streamBodySent, true);
+    assert.equal(confirmed.playback.song.id, 'candidate-1');
+    assert.equal(confirmed.playback.song.title, 'Candidate One');
+    assert.equal(confirmed.playback.bytesSent, 4);
+    assert.equal(confirmed.radio.id, generated.radio.id);
+    assert.equal(confirmed.radio.seedId, 'seed');
+    assert.equal(confirmed.radio.playbackConfirmedSong.id, 'candidate-1');
+
+    const disconnectRadioResponse = await fetch(`http://127.0.0.1:${server.address().port}/rest/getSimilarSongs2.view?id=disconnect-seed&count=1&f=json&u=alice&t=tok&s=salt&c=client-c`);
+    assert.equal(disconnectRadioResponse.status, 200);
+    await waitFor(
+      () => webhookEvents.filter((item) => item.payload.event === 'radio.generated').length === 3,
+      'disconnect test radio.generated webhook'
+    );
+    const disconnectedRequest = httpRequest(
+      `http://127.0.0.1:${server.address().port}/rest/stream.view?id=candidate-1&f=json&u=alice&t=tok&s=salt&c=client-c`
+    );
+    disconnectedRequest.on('error', () => {});
+    disconnectedRequest.end();
+    await waitFor(() => streamRequestCount === 2, 'disconnect test upstream request');
+    const disconnected = new Promise((resolve) => disconnectedRequest.once('close', resolve));
+    disconnectedRequest.destroy();
+    await disconnected;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(webhookEvents.filter((item) => item.payload.event === 'radio.playback_confirmed').length, 1);
+
+    assert.deepEqual(webhookEvents.map((item) => item.payload.event), [
+      'radio.generated',
+      'radio.generated',
+      'radio.playback_confirmed',
+      'radio.generated'
+    ]);
+
+    const statusResponse = await fetch(`http://127.0.0.1:${server.address().port}/api/router/status`);
+    const status = await statusResponse.json();
+    assert.equal(status.router.webhooks.enabled, true);
+    assert.equal(status.router.webhooks.recent.length, 4);
+    assert.equal(status.router.lastRadioQueue.seedId, 'disconnect-seed');
+    assert.equal(status.router.lastRadioQueue.playbackConfirmedSong, null);
+    assert.deepEqual(status.router.playbackTraffic.recent, []);
+  } finally {
+    server.close();
+    navidrome.close();
+    audiomuse.close();
+    webhook.close();
+    await Promise.all([once(server, 'close'), once(navidrome, 'close'), once(audiomuse, 'close'), once(webhook, 'close')]);
+    delete process.env.NAVIROUTER_WEBHOOK_URL;
+    delete process.env.NAVIROUTER_WEBHOOK_SECRET;
+    delete process.env.NAVIROUTER_WEBHOOK_EVENTS;
+    delete process.env.NAVIROUTER_RECENT_PLAYBACK_LIMIT;
   }
 });
 
@@ -670,7 +936,95 @@ test('native musicFolderId scopes AudioMuse similar-song candidates', async () =
   }
 });
 
+test('webhook delivery drops new events when its pending queue is full', async () => {
+  const webhookEvents = [];
+  let releaseFirstDelivery;
+  const navidrome = createServer((req, res) => {
+    const url = new URL(req.url, 'http://navidrome.test');
+    const id = url.searchParams.get('id');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      'subsonic-response': {
+        status: 'ok',
+        song: { id, title: `Song ${id}`, artist: 'Artist', isDir: false }
+      }
+    }));
+  });
+  const audiomuse = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify([{ item_id: 'candidate-1' }]));
+  });
+  const webhook = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    webhookEvents.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    if (webhookEvents.length === 1) {
+      releaseFirstDelivery = () => {
+        res.writeHead(204);
+        res.end();
+      };
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('ignored');
+  });
+
+  await Promise.all([
+    new Promise((resolve) => navidrome.listen(0, resolve)),
+    new Promise((resolve) => audiomuse.listen(0, resolve)),
+    new Promise((resolve) => webhook.listen(0, resolve))
+  ]);
+
+  const navidromePort = navidrome.address().port;
+  const audiomusePort = audiomuse.address().port;
+  const webhookPort = webhook.address().port;
+  process.env.NAVIDROME_URL = `http://127.0.0.1:${navidromePort}`;
+  process.env.AUDIOMUSE_URL = `http://127.0.0.1:${audiomusePort}`;
+  process.env.NAVIROUTER_ALLOWED_NAVIDROME_HOSTS = `127.0.0.1:${navidromePort}`;
+  process.env.NAVIROUTER_ALLOWED_AUDIOMUSE_HOSTS = `127.0.0.1:${audiomusePort}`;
+  process.env.NAVIROUTER_WEBHOOK_URL = `http://127.0.0.1:${webhookPort}/events`;
+  process.env.NAVIROUTER_WEBHOOK_EVENTS = 'radio.generated';
+  process.env.NAVIROUTER_WEBHOOK_QUEUE_MAX = '1';
+
+  const { server } = await import(`../server.mjs?webhook-saturation=${Date.now()}`);
+  await new Promise((resolve) => server.listen(0, resolve));
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const radio = (seed) => fetch(`${baseUrl}/rest/getSimilarSongs2.view?id=${seed}&count=1&f=json&u=alice&t=tok&s=salt&c=client-a`);
+
+    assert.equal((await radio('seed-1')).status, 200);
+    await waitFor(() => webhookEvents.length === 1, 'first in-flight webhook');
+    assert.equal((await radio('seed-2')).status, 200);
+    assert.equal((await radio('seed-3')).status, 200);
+
+    let status = await (await fetch(`${baseUrl}/api/router/status`)).json();
+    assert.equal(status.router.webhooks.pending, 1);
+    assert.equal(status.router.webhooks.dropped, 1);
+    assert.equal(webhookEvents.length, 1);
+
+    releaseFirstDelivery();
+    releaseFirstDelivery = null;
+    await waitFor(() => webhookEvents.length === 2, 'queued webhook delivery');
+    status = await (await fetch(`${baseUrl}/api/router/status`)).json();
+    assert.equal(status.router.webhooks.pending, 0);
+    assert.equal(status.router.webhooks.dropped, 1);
+    assert.deepEqual(webhookEvents.map((event) => event.radio.seedId), ['seed-1', 'seed-2']);
+  } finally {
+    if (releaseFirstDelivery) releaseFirstDelivery();
+    server.close();
+    navidrome.close();
+    audiomuse.close();
+    webhook.close();
+    await Promise.all([once(server, 'close'), once(navidrome, 'close'), once(audiomuse, 'close'), once(webhook, 'close')]);
+    delete process.env.NAVIROUTER_WEBHOOK_URL;
+    delete process.env.NAVIROUTER_WEBHOOK_EVENTS;
+    delete process.env.NAVIROUTER_WEBHOOK_QUEUE_MAX;
+  }
+});
+
 test('router records failed AudioMuse radio seed diagnostics before fallback', async () => {
+  const webhookEvents = [];
   const navidrome = createServer((req, res) => {
     const url = new URL(req.url, 'http://navidrome.test');
     if (url.pathname.endsWith('/getSong.view')) {
@@ -680,6 +1034,19 @@ test('router records failed AudioMuse radio seed diagnostics before fallback', a
         'subsonic-response': {
           status: 'ok',
           song: { id, title: 'Artist Radio Seed', artist: 'Cole Chaney', album: 'Seed Album', isDir: false }
+        }
+      }));
+      return;
+    }
+    if (
+      url.pathname.endsWith('/getSimilarSongs2.view')
+      && url.searchParams.get('id') === 'failed-fallback-seed'
+    ) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        'subsonic-response': {
+          status: 'failed',
+          error: { code: 40, message: 'Wrong username or password' }
         }
       }));
       return;
@@ -696,22 +1063,33 @@ test('router records failed AudioMuse radio seed diagnostics before fallback', a
       return;
     }
     assert.equal(url.pathname, '/api/similar_tracks');
-    assert.equal(url.searchParams.get('item_id'), 'artist-radio-seed');
+    assert.ok(['artist-radio-seed', 'failed-fallback-seed'].includes(url.searchParams.get('item_id')));
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'Target track not found in index or no similar tracks found.' }));
+  });
+  const webhook = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    webhookEvents.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    res.writeHead(204);
+    res.end();
   });
 
   await Promise.all([
     new Promise((resolve) => navidrome.listen(0, resolve)),
-    new Promise((resolve) => audiomuse.listen(0, resolve))
+    new Promise((resolve) => audiomuse.listen(0, resolve)),
+    new Promise((resolve) => webhook.listen(0, resolve))
   ]);
 
   const navidromePort = navidrome.address().port;
   const audiomusePort = audiomuse.address().port;
+  const webhookPort = webhook.address().port;
   process.env.NAVIDROME_URL = `http://127.0.0.1:${navidromePort}`;
   process.env.AUDIOMUSE_URL = `http://127.0.0.1:${audiomusePort}`;
   process.env.NAVIROUTER_ALLOWED_NAVIDROME_HOSTS = `127.0.0.1:${navidromePort}`;
   process.env.NAVIROUTER_ALLOWED_AUDIOMUSE_HOSTS = `127.0.0.1:${audiomusePort}`;
+  process.env.NAVIROUTER_WEBHOOK_URL = `http://127.0.0.1:${webhookPort}/events`;
+  process.env.NAVIROUTER_WEBHOOK_EVENTS = 'radio.fallback';
 
   const { server } = await import(`../server.mjs?radio-failure=${Date.now()}`);
   await new Promise((resolve) => server.listen(0, resolve));
@@ -721,6 +1099,27 @@ test('router records failed AudioMuse radio seed diagnostics before fallback', a
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body['subsonic-response'].status, 'ok');
+    await waitFor(() => webhookEvents.length === 1, 'radio.fallback webhook');
+    assert.equal(webhookEvents[0].event, 'radio.fallback');
+    assert.equal(webhookEvents[0].radioFailure.seedId, 'artist-radio-seed');
+    assert.equal(webhookEvents[0].fallback.service, 'Navidrome');
+    assert.equal(webhookEvents[0].fallback.status, 200);
+
+    const failedFallbackResponse = await fetch(`http://127.0.0.1:${server.address().port}/rest/getSimilarSongs2.view?id=failed-fallback-seed&count=2&f=json&u=alice&t=tok&s=salt`);
+    assert.equal(failedFallbackResponse.status, 200);
+    const failedFallbackBody = await failedFallbackResponse.json();
+    assert.equal(failedFallbackBody['subsonic-response'].status, 'failed');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(webhookEvents.length, 1);
+
+    const generatedResponse = await fetch(`http://127.0.0.1:${server.address().port}/api/router/radio-playlist`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'artist-radio-seed', u: 'alice', t: 'tok', s: 'salt' })
+    });
+    assert.equal(generatedResponse.status, 404);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(webhookEvents.length, 1);
 
     const statusResponse = await fetch(`http://127.0.0.1:${server.address().port}/api/router/status`);
     const status = await statusResponse.json();
@@ -735,7 +1134,10 @@ test('router records failed AudioMuse radio seed diagnostics before fallback', a
     server.close();
     navidrome.close();
     audiomuse.close();
-    await Promise.all([once(server, 'close'), once(navidrome, 'close'), once(audiomuse, 'close')]);
+    webhook.close();
+    await Promise.all([once(server, 'close'), once(navidrome, 'close'), once(audiomuse, 'close'), once(webhook, 'close')]);
+    delete process.env.NAVIROUTER_WEBHOOK_URL;
+    delete process.env.NAVIROUTER_WEBHOOK_EVENTS;
   }
 });
 

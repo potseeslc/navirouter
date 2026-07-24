@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -16,7 +16,7 @@ const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = resolve(root, 'public');
 const appName = 'NaviRouter';
-const appVersion = '0.1.1';
+const appVersion = '0.1.2';
 const subsonicApiVersion = '1.16.1';
 const port = Number(process.env.PORT || 8098);
 const navidromeUrl = serviceUrl(process.env.NAVIDROME_URL || 'http://127.0.0.1:4533', 'NAVIDROME_URL');
@@ -35,12 +35,29 @@ const recentPlaybackLimit = boundedCount(process.env.NAVIROUTER_RECENT_PLAYBACK_
 const navidromeDbPath = String(process.env.NAVIDROME_DB_PATH || '').trim();
 const navidromeDbContainer = String(process.env.NAVIDROME_DB_CONTAINER || '').trim();
 const dockerCliPath = String(process.env.NAVIROUTER_DOCKER_CLI || '/usr/local/bin/docker').trim();
+const webhookUrl = String(process.env.NAVIROUTER_WEBHOOK_URL || '').trim();
+const webhookSecret = secretValue('NAVIROUTER_WEBHOOK_SECRET', 'NAVIROUTER_WEBHOOK_SECRET_FILE');
+const webhookTimeoutMs = boundedCount(process.env.NAVIROUTER_WEBHOOK_TIMEOUT_MS, 3000, 250, 30000);
+const webhookEvents = configuredWebhookEvents(process.env.NAVIROUTER_WEBHOOK_EVENTS);
+const webhookQueueLimit = boundedCount(process.env.NAVIROUTER_WEBHOOK_QUEUE_MAX, 100, 1, 1000);
+const fallbackResponseMaxBytes = boundedCount(process.env.NAVIROUTER_FALLBACK_RESPONSE_MAX_BYTES, 1_048_576, 1024, 10_485_760);
+const radioQueueHistoryLimit = 100;
+const radioQueueMaxAgeMs = boundedCount(process.env.NAVIROUTER_RADIO_CORRELATION_TTL_SECONDS, 21_600, 60, 604_800) * 1000;
 const subsonicTraffic = {
   total: 0,
   byMethod: {},
   recent: []
 };
 const playbackTraffic = {
+  recent: []
+};
+const webhookTraffic = {
+  enabled: Boolean(webhookUrl),
+  urlConfigured: Boolean(webhookUrl),
+  events: [...webhookEvents],
+  queueMax: webhookQueueLimit,
+  pending: 0,
+  dropped: 0,
   recent: []
 };
 const songCache = new Map();
@@ -66,8 +83,13 @@ let lastRadioQueue = {
   requestedLibraryId: null,
   scopeSource: null,
   returnedCount: 0,
+  playbackConfirmedAt: null,
+  playbackConfirmedSong: null,
   songs: []
 };
+let radioQueueHistory = [];
+let webhookDeliveryQueue = [];
+let webhookDeliveryActive = false;
 let lastRadioFailure = {
   ok: null,
   at: null,
@@ -145,7 +167,14 @@ const server = createServer(async (req, res) => {
           navidrome: publicServiceUrl(navidromeUrl.href),
           audiomuse: publicServiceUrl(audiomuseUrl.href)
         },
-        intercepts: [...interceptedMethods]
+        intercepts: [...interceptedMethods],
+        webhooks: {
+          enabled: Boolean(webhookUrl),
+          events: [...webhookEvents],
+          signature: webhookSecret ? 'hmac-sha256' : 'none',
+          timeoutMs: webhookTimeoutMs,
+          queueMax: webhookQueueLimit
+        }
       });
     }
 
@@ -194,6 +223,11 @@ async function handleSubsonic(req, res, url, libraryId = null) {
 
   if (interceptedMethods.has(method)) {
     const intercepted = await interceptSubsonicMethod(req, params, method, format, requestedLibraryId);
+    if (intercepted?.routerFallback) {
+      return proxyNavidrome(req, res, url, params, bodyParams, {
+        radioFallback: intercepted.radioFailure
+      });
+    }
     if (intercepted) return sendSubsonicResponse(res, format, intercepted);
   }
 
@@ -218,11 +252,11 @@ async function audioMuseSimilarSongs(req, params, method, format, libraryId = nu
   const radio = await resolveAudioMuseRadioSongs(seedId, count, params, libraryId);
   if (!radio) return null;
   if (radio.failed) {
-    await recordRadioFailure(method, seedId, params, radio.scope, radio);
-    return null;
+    const radioFailure = await recordRadioFailure(method, seedId, params, radio.scope, radio);
+    return { routerFallback: true, radioFailure };
   }
 
-  recordRadioQueue(method, seedId, radio.scope.libraryId, radio.scope.source, radio.songs);
+  recordRadioQueue(method, seedId, radio.scope.libraryId, radio.scope.source, radio.songs, params, req);
   const key = method === 'getsimilarsongs2' ? 'similarSongs2' : 'similarSongs';
   return {
     status: 'ok',
@@ -654,7 +688,7 @@ async function saveGeneratedRadioPlaylist(req, res, url) {
       ? await createNavidromePlaylist(fallbackName, songIds, auth)
       : await updateNavidromePlaylist(params.get('playlistId'), fallbackName, songIds, auth, mode);
 
-    recordRadioQueue('generatedplaylist', seedId, radio.scope.libraryId, radio.scope.source, radio.songs);
+    recordRadioQueue('generatedplaylist', seedId, radio.scope.libraryId, radio.scope.source, radio.songs, auth, req);
     return sendJson(res, {
       ok: true,
       playlist: {
@@ -709,7 +743,6 @@ async function syncAudioMusePlaylist(req, res, url) {
       ? await createNavidromePlaylist(fallbackName, resolvedSongIds, auth)
       : await updateNavidromePlaylist(params.get('playlistId'), fallbackName, resolvedSongIds, auth, mode);
 
-    recordRadioQueue('syncedplaylist', params.get('seedId') || songs[0].id, requestedLibraryId, requestedLibraryId ? 'client' : 'none', songs);
     return sendJson(res, {
       ok: true,
       playlist: {
@@ -843,10 +876,10 @@ function playlistSyncSongIds(params, payload = null) {
   return [...new Set(ids)].slice(0, 500);
 }
 
-async function proxyNavidrome(req, res, originalUrl, params, bodyParams) {
+async function proxyNavidrome(req, res, originalUrl, params, bodyParams, options = {}) {
   const pathname = originalUrl.pathname.replace(/^\/rest\//, '/rest/');
   const method = subsonicMethod(pathname);
-  const playbackEvent = recordPlaybackRequest(method, params);
+  const playbackEvent = recordPlaybackRequest(method, params, req);
   const upstreamUrl = navidromeEndpoint(pathname, params);
   const headers = navidromeRequestHeaders(req);
   const init = {
@@ -865,6 +898,26 @@ async function proxyNavidrome(req, res, originalUrl, params, bodyParams) {
 
   const response = await fetch(upstreamUrl, init);
   recordPlaybackResponse(playbackEvent, response, req);
+  if (options.radioFallback) {
+    const body = await readBoundedResponseBody(response, fallbackResponseMaxBytes);
+    const accepted = response.ok && subsonicResponseSucceeded(
+      body,
+      response.headers.get('content-type')
+    );
+    if (accepted) {
+      emitRouterEvent('radio.fallback', {
+        radioFailure: options.radioFallback,
+        fallback: {
+          service: 'Navidrome',
+          status: response.status
+        }
+      });
+    }
+    res.writeHead(response.status, responseHeaders(response));
+    finishPlaybackResponse(playbackEvent, true);
+    return res.end(body);
+  }
+
   res.writeHead(response.status, responseHeaders(response));
   if (req.method === 'HEAD') {
     finishPlaybackResponse(playbackEvent, true);
@@ -874,18 +927,54 @@ async function proxyNavidrome(req, res, originalUrl, params, bodyParams) {
     finishPlaybackResponse(playbackEvent, true);
     return res.end();
   }
+
   const upstreamStream = Readable.fromWeb(response.body);
-  upstreamStream.on('data', (chunk) => countPlaybackBytes(playbackEvent, chunk));
-  upstreamStream.on('error', (error) => {
+  let clientClosed = false;
+  const onClientClose = () => {
+    if (res.writableEnded) return;
+    clientClosed = true;
+    finishPlaybackResponse(playbackEvent, false, 'Client closed stream before completion');
+    upstreamStream.destroy();
+  };
+  res.once('close', onClientClose);
+  res.once('finish', () => finishPlaybackResponse(playbackEvent, true));
+
+  try {
+    for await (const chunk of upstreamStream) {
+      if (clientClosed || res.destroyed) break;
+      const canContinue = res.write(chunk, (error) => {
+        if (!error && !clientClosed && !res.destroyed) countPlaybackBytes(playbackEvent, chunk);
+      });
+      if (!canContinue) await waitForResponseDrain(res);
+    }
+    if (!clientClosed && !res.writableEnded) res.end();
+  } catch (error) {
+    if (clientClosed) return;
     finishPlaybackResponse(playbackEvent, false, publicError(error));
     console.error(`Navidrome stream failed: ${publicError(error)}`);
-    res.destroy(error);
+    if (!res.destroyed) res.destroy(error);
+  } finally {
+    res.off('close', onClientClose);
+  }
+}
+
+function waitForResponseDrain(res) {
+  return new Promise((resolve, reject) => {
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error('Client closed stream before completion'));
+    };
+    const cleanup = () => {
+      res.off('drain', onDrain);
+      res.off('close', onClose);
+    };
+    res.once('drain', onDrain);
+    res.once('close', onClose);
   });
-  res.on('finish', () => finishPlaybackResponse(playbackEvent, true));
-  res.on('close', () => {
-    if (!res.writableEnded) finishPlaybackResponse(playbackEvent, false, 'Client closed stream before completion');
-  });
-  upstreamStream.pipe(res);
 }
 
 function navidromeEndpoint(pathname, params) {
@@ -1196,8 +1285,9 @@ function recordSubsonicRequest(method, params, libraryId = null, requestedLibrar
   subsonicTraffic.recent.length = Math.min(subsonicTraffic.recent.length, recentRequestsLimit);
 }
 
-function recordRadioQueue(method, seedId, requestedLibraryId, scopeSource, songs) {
-  lastRadioQueue = {
+function recordRadioQueue(method, seedId, requestedLibraryId, scopeSource, songs, params = new URLSearchParams(), req = null) {
+  const queue = {
+    id: randomUUID(),
     ok: true,
     at: new Date().toISOString(),
     method,
@@ -1205,8 +1295,21 @@ function recordRadioQueue(method, seedId, requestedLibraryId, scopeSource, songs
     requestedLibraryId,
     scopeSource,
     returnedCount: songs.length,
+    playbackConfirmedAt: null,
+    playbackConfirmedSong: null,
     songs: songs.map(publicSongSummary)
   };
+  lastRadioQueue = queue;
+  radioQueueHistory.unshift({
+    queue,
+    correlation: requestCorrelation(params, req)
+  });
+  radioQueueHistory.length = Math.min(radioQueueHistory.length, radioQueueHistoryLimit);
+  emitRouterEvent('radio.generated', {
+    radio: publicRadioSummary(queue),
+    songs: queue.songs.slice(0, 20)
+  });
+  return queue;
 }
 
 async function recordRadioFailure(method, seedId, params, scope = {}, failure = {}) {
@@ -1223,17 +1326,26 @@ async function recordRadioFailure(method, seedId, params, scope = {}, failure = 
     errorCode: failure.errorCode ?? null,
     message: failure.message || 'AudioMuse radio lookup failed and NaviRouter fell back to Navidrome.'
   };
+  return lastRadioFailure;
 }
 
-function recordPlaybackRequest(method, params) {
-  if (recentPlaybackLimit <= 0 || !['stream', 'getsong', 'scrobble'].includes(method)) return null;
+function recordPlaybackRequest(method, params, req = null) {
+  if (!['stream', 'getsong', 'scrobble'].includes(method)) return null;
   const id = params.get('id');
   if (!id) return null;
-  const lastRadioIds = new Set(lastRadioQueue.songs.map((song) => song.id));
+  const correlation = requestCorrelation(params, req);
+  const now = Date.now();
+  radioQueueHistory = radioQueueHistory.filter((entry) => radioQueueIsFresh(entry.queue, now));
+  const radioEntry = radioQueueHistory.find((entry) => (
+    sameRequestCorrelation(entry.correlation, correlation)
+    && entry.queue.songs.some((song) => song.id === id)
+  ));
+  const radioQueue = radioEntry?.queue || null;
   const event = {
     method,
     id,
-    inLastRadioQueue: lastRadioIds.has(id),
+    inLastRadioQueue: Boolean(radioQueue),
+    radioQueueId: radioQueue?.id || null,
     at: new Date().toISOString(),
     responseStatus: null,
     responseContentType: null,
@@ -1245,8 +1357,10 @@ function recordPlaybackRequest(method, params) {
     durationMs: null,
     error: null
   };
-  playbackTraffic.recent.unshift(event);
-  playbackTraffic.recent.length = Math.min(playbackTraffic.recent.length, recentPlaybackLimit);
+  if (recentPlaybackLimit > 0) {
+    playbackTraffic.recent.unshift(event);
+    playbackTraffic.recent.length = Math.min(playbackTraffic.recent.length, recentPlaybackLimit);
+  }
   return event;
 }
 
@@ -1262,6 +1376,7 @@ function recordPlaybackResponse(event, response, req) {
 function countPlaybackBytes(event, chunk) {
   if (!event) return;
   event.bytesSent += Buffer.byteLength(chunk);
+  maybeConfirmRadioPlayback(event);
 }
 
 function finishPlaybackResponse(event, completed, error = null) {
@@ -1269,6 +1384,125 @@ function finishPlaybackResponse(event, completed, error = null) {
   event.completed = completed;
   event.durationMs = Date.now() - Date.parse(event.at);
   event.error = error;
+}
+
+function maybeConfirmRadioPlayback(event) {
+  if (!event || event.method !== 'stream' || !event.radioQueueId || event.bytesSent <= 0) return;
+  if (event.responseStatus < 200 || event.responseStatus >= 300) return;
+  if (!isAudioResponse(event.responseContentType)) return;
+
+  const radioQueue = radioQueueHistory.find((entry) => entry.queue.id === event.radioQueueId)?.queue;
+  if (!radioQueue || radioQueue.playbackConfirmedAt) return;
+
+  const song = radioQueue.songs.find((item) => item.id === event.id) || { id: event.id };
+  radioQueue.playbackConfirmedAt = new Date().toISOString();
+  radioQueue.playbackConfirmedSong = publicSongSummary(song);
+  if (lastRadioQueue.id === radioQueue.id) lastRadioQueue = radioQueue;
+  emitRouterEvent('radio.playback_confirmed', {
+    radio: publicRadioSummary(radioQueue),
+    playback: {
+      id: event.id,
+      song: radioQueue.playbackConfirmedSong,
+      responseStatus: event.responseStatus,
+      responseContentType: event.responseContentType,
+      bytesSent: event.bytesSent,
+      rangeRequest: event.rangeRequest
+    }
+  });
+}
+
+function publicRadioSummary(queue = lastRadioQueue) {
+  return {
+    id: queue.id || null,
+    source: 'AudioMuse',
+    method: queue.method,
+    seedId: queue.seedId,
+    requestedLibraryId: queue.requestedLibraryId,
+    scopeSource: queue.scopeSource,
+    returnedCount: queue.returnedCount,
+    at: queue.at,
+    playbackConfirmedAt: queue.playbackConfirmedAt,
+    playbackConfirmedSong: queue.playbackConfirmedSong
+  };
+}
+
+function requestCorrelation(params, req = null) {
+  const username = String(params?.get?.('u') || '');
+  const userAgent = String(req?.headers?.['user-agent'] || '');
+  return {
+    usernameFingerprint: username ? createHash('sha256').update(username).digest('hex').slice(0, 16) : null,
+    client: String(params?.get?.('c') || '').slice(0, 80),
+    userAgentFingerprint: userAgent ? createHash('sha256').update(userAgent).digest('hex').slice(0, 16) : null
+  };
+}
+
+function sameRequestCorrelation(left, right) {
+  if (!left?.usernameFingerprint || left.usernameFingerprint !== right?.usernameFingerprint) return false;
+  if ((left.client || right?.client) && left.client !== right.client) return false;
+  if ((left.userAgentFingerprint || right?.userAgentFingerprint)
+      && left.userAgentFingerprint !== right.userAgentFingerprint) return false;
+  return true;
+}
+
+function radioQueueIsFresh(queue, now = Date.now(), maxAgeMs = radioQueueMaxAgeMs) {
+  const createdAt = Date.parse(queue?.at || '');
+  return Number.isFinite(createdAt) && now - createdAt <= maxAgeMs;
+}
+
+function isAudioResponse(contentType) {
+  const normalized = String(contentType || '').split(';', 1)[0].trim().toLowerCase();
+  return normalized.startsWith('audio/')
+    || normalized === 'application/octet-stream'
+    || normalized === 'binary/octet-stream';
+}
+
+function subsonicResponseSucceeded(body, contentType = '') {
+  const text = Buffer.isBuffer(body) ? body.toString('utf8') : String(body || '');
+  const normalizedType = String(contentType || '').toLowerCase();
+  if (normalizedType.includes('json') || text.trimStart().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      return parsed?.['subsonic-response']?.status === 'ok';
+    } catch {
+      return false;
+    }
+  }
+
+  const status = text.match(/<subsonic-response\b[^>]*\bstatus=["']([^"']+)["']/i)?.[1];
+  return String(status || '').toLowerCase() === 'ok';
+}
+
+async function readBoundedResponseBody(response, maxBytes) {
+  const declaredLength = Number.parseInt(response.headers.get('content-length') || '', 10);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    void response.body?.cancel().catch(() => {});
+    const error = new Error(`Navidrome fallback response exceeded ${maxBytes} bytes`);
+    error.status = 502;
+    throw error;
+  }
+
+  if (!response.body) return Buffer.alloc(0);
+  const chunks = [];
+  let total = 0;
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      total += chunk.length;
+      if (total > maxBytes) {
+        await reader.cancel();
+        const error = new Error(`Navidrome fallback response exceeded ${maxBytes} bytes`);
+        error.status = 502;
+        throw error;
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
 }
 
 function publicSongSummary(song) {
@@ -1438,6 +1672,113 @@ function songCacheStatus() {
   };
 }
 
+function configuredWebhookEvents(value) {
+  const defaults = ['radio.generated', 'radio.playback_confirmed', 'radio.fallback'];
+  const raw = String(value || '').trim();
+  const events = raw ? raw.split(',') : defaults;
+  return new Set(events.map((event) => event.trim()).filter(Boolean));
+}
+
+function emitRouterEvent(event, data = {}) {
+  if (!webhookUrl || !webhookEvents.has(event)) return;
+  const payload = {
+    id: randomUUID(),
+    event,
+    at: new Date().toISOString(),
+    router: versionInfo(),
+    ...data
+  };
+  if (webhookDeliveryQueue.length >= webhookQueueLimit) {
+    webhookTraffic.dropped += 1;
+    recordWebhookDelivery(event, {
+      payloadId: payload.id,
+      ok: false,
+      dropped: true,
+      error: 'Webhook queue is full'
+    });
+    return;
+  }
+  webhookDeliveryQueue.push(payload);
+  webhookTraffic.pending = webhookDeliveryQueue.length;
+  void drainWebhookDeliveryQueue();
+}
+
+async function drainWebhookDeliveryQueue() {
+  if (webhookDeliveryActive) return;
+  webhookDeliveryActive = true;
+  try {
+    while (webhookDeliveryQueue.length > 0) {
+      const payload = webhookDeliveryQueue.shift();
+      webhookTraffic.pending = webhookDeliveryQueue.length;
+      await deliverWebhookEvent(payload);
+    }
+  } finally {
+    webhookDeliveryActive = false;
+    webhookTraffic.pending = webhookDeliveryQueue.length;
+    if (webhookDeliveryQueue.length > 0) void drainWebhookDeliveryQueue();
+  }
+}
+
+async function deliverWebhookEvent(payload) {
+  const body = JSON.stringify(payload);
+  const headers = {
+    'content-type': 'application/json',
+    'user-agent': `${appName}/${appVersion}`
+  };
+  if (webhookSecret) {
+    headers['x-navirouter-signature'] = `sha256=${createHmac('sha256', webhookSecret).update(body).digest('hex')}`;
+  }
+
+  const started = Date.now();
+  const responseController = new AbortController();
+  try {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers,
+      body,
+      signal: AbortSignal.any([responseController.signal, AbortSignal.timeout(webhookTimeoutMs)])
+    });
+    await discardWebhookResponse(response);
+    recordWebhookDelivery(payload.event, {
+      payloadId: payload.id,
+      ok: response.ok,
+      status: response.status,
+      latencyMs: Date.now() - started
+    });
+    if (!response.ok) {
+      console.warn(`NaviRouter webhook ${payload.event} returned HTTP ${response.status}.`);
+    }
+  } catch (error) {
+    recordWebhookDelivery(payload.event, {
+      payloadId: payload.id,
+      ok: false,
+      status: null,
+      latencyMs: Date.now() - started,
+      error: redactText(error.message)
+    });
+    console.warn(`NaviRouter webhook ${payload.event} failed: ${redactText(error.message)}`);
+  } finally {
+    responseController.abort();
+  }
+}
+
+async function discardWebhookResponse(response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Delivery status is based on the webhook response headers.
+  }
+}
+
+function recordWebhookDelivery(event, result) {
+  webhookTraffic.recent.unshift({
+    event,
+    at: new Date().toISOString(),
+    ...result
+  });
+  webhookTraffic.recent.length = Math.min(webhookTraffic.recent.length, 25);
+}
+
 async function health() {
   const [navidrome, audiomuse] = await Promise.all([
     checkService('navidrome', serviceEndpoint(navidromeUrl, '/app/')),
@@ -1454,7 +1795,8 @@ async function health() {
       lastRadioFailure,
       playbackTraffic,
       subsonicTraffic,
-      songCache: songCacheStatus()
+      songCache: songCacheStatus(),
+      webhooks: webhookTraffic
     },
     services: { navidrome, audiomuse }
   };
@@ -1504,7 +1846,7 @@ function sendClientTestReset(req, res) {
   return sendJson(res, {
     ok: true,
     resetAt: new Date().toISOString(),
-    cleared: ['subsonicTraffic', 'playbackTraffic', 'lastRadioQueue', 'lastRadioFailure', 'audioMuseSimilarity']
+    cleared: ['subsonicTraffic', 'playbackTraffic', 'lastRadioQueue', 'lastRadioFailure', 'audioMuseSimilarity', 'webhookTraffic']
   });
 }
 
@@ -1528,8 +1870,11 @@ function resetClientTestDiagnostics() {
     requestedLibraryId: null,
     scopeSource: null,
     returnedCount: 0,
+    playbackConfirmedAt: null,
+    playbackConfirmedSong: null,
     songs: []
   };
+  radioQueueHistory = [];
   lastRadioFailure = {
     ok: null,
     at: null,
@@ -1542,6 +1887,8 @@ function resetClientTestDiagnostics() {
     errorCode: null,
     message: 'No failed AudioMuse radio attempt has been recorded.'
   };
+  webhookTraffic.recent = [];
+  webhookTraffic.dropped = 0;
 }
 
 function clientTestReport(clientName = 'Client') {
@@ -1826,9 +2173,13 @@ export {
   server,
   boundedCount,
   clientTestReport,
+  configuredWebhookEvents,
+  discardWebhookResponse,
+  isAudioResponse,
   mergedParams,
   navidromeRequestHeaders,
   normalizeAudioMuseCandidates,
+  publicRadioSummary,
   recordSubsonicRequest,
   resetClientTestDiagnostics,
   redactText,
@@ -1841,10 +2192,14 @@ export {
   songCacheStatus,
   songAttributes,
   subsonicMethod,
+  subsonicResponseSucceeded,
   subsonicXml,
   similarityFromDistance,
   openSubsonicExtensionsResponse,
   recordAudioMuseSimilaritySuccess,
+  radioQueueIsFresh,
+  readBoundedResponseBody,
+  sameRequestCorrelation,
   versionInfo,
   xmlEscape
 };

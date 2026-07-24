@@ -21,6 +21,7 @@ Why:
 
 - `v0.1.0`: first MVP tag.
 - `v0.1.1`: router roadmap update with dashboard, library-scope inference, playlist save/update/generation APIs, attribution docs, deployment-security docs, and improved sonic path bridge ranking.
+- `v0.1.2`: generic signed webhooks for correlated AudioMuse radio generation, playback confirmation, and Navidrome fallback events.
 
 Use patch releases while the public API is still settling. Move to `v0.2.0` when another client beyond Arpeggi is verified, GitHub community feedback changes behavior, or a client profile becomes necessary.
 

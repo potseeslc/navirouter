@@ -60,6 +60,7 @@ Copy `.env.example` to `.env` and set:
 - `NAVIROUTER_MAX_BODY_BYTES` if you need to adjust the Subsonic form POST limit
 - `NAVIROUTER_SONG_CACHE_TTL_SECONDS` and `NAVIROUTER_SONG_CACHE_MAX` if you need to tune candidate-resolution caching
 - `NAVIROUTER_RESOLVE_CONCURRENCY` if you need to tune parallel Navidrome song lookups for AudioMuse candidates
+- `NAVIROUTER_WEBHOOK_URL` if you want generic webhook notifications for AudioMuse radio events
 
 Then run:
 
@@ -120,6 +121,34 @@ During client testing, open the console at `http://localhost:8098/` or inspect `
 
 See [Dashboard And Terminal Examples](docs/dashboard-examples.md) for sanitized health, status, and config output.
 Use [Client Method Logger](docs/client-method-logger.md) when you want to test a client against a fake Subsonic/OpenSubsonic server with fake credentials before connecting it to the real library.
+
+### Webhook Notifications
+
+NaviRouter can POST generic JSON webhook events when AudioMuse radio is generated, when a client actually streams a song from that generated queue, or when AudioMuse misses and NaviRouter falls back to Navidrome.
+
+```env
+NAVIROUTER_WEBHOOK_URL=https://example.test/navirouter/events
+NAVIROUTER_WEBHOOK_EVENTS=radio.generated,radio.playback_confirmed,radio.fallback
+NAVIROUTER_WEBHOOK_SECRET=change-me
+NAVIROUTER_WEBHOOK_TIMEOUT_MS=3000
+NAVIROUTER_WEBHOOK_QUEUE_MAX=100
+NAVIROUTER_FALLBACK_RESPONSE_MAX_BYTES=1048576
+NAVIROUTER_RADIO_CORRELATION_TTL_SECONDS=21600
+```
+
+Supported events:
+
+- `radio.generated`: AudioMuse returned a queue to a Subsonic/OpenSubsonic client or router playlist endpoint.
+- `radio.playback_confirmed`: an authenticated client requested a song from its AudioMuse queue and NaviRouter wrote audio bytes to that client. Radios are correlated by an opaque radio ID, authenticated Navidrome user, client identifier, and user agent when those values are available.
+- `radio.fallback`: AudioMuse could not serve the seed and Navidrome returned a successful Subsonic response.
+
+Every payload has a unique event `id`; radio events also share a stable `radio.id`. Webhook delivery is ordered, best-effort, and never blocks radio or playback. The pending queue is bounded by `NAVIROUTER_WEBHOOK_QUEUE_MAX`; dropped-event counts appear in router diagnostics. Radio-to-playback correlation expires after `NAVIROUTER_RADIO_CORRELATION_TTL_SECONDS`. Generic Subsonic clients do not provide a universal device identifier, so two identical client instances sharing one account can remain ambiguous if every available request characteristic is the same. If `NAVIROUTER_WEBHOOK_SECRET` or `NAVIROUTER_WEBHOOK_SECRET_FILE` is set, requests include:
+
+```text
+X-NaviRouter-Signature: sha256=<hmac-sha256-of-json-body>
+```
+
+Payloads do not include Subsonic passwords, tokens, salts, or AudioMuse bearer tokens. Recent delivery status appears under `router.webhooks` in `/api/router/status`.
 
 ### Save The Last AudioMuse Radio Queue
 
